@@ -270,6 +270,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 PENDING_MATCHES = {}
 LAST_REMINDERS = set()
+DIGEST_SENT_DATES = set()  # даты, за которые уже отправлен дайджест
 
 async def handle_forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1042,6 +1043,116 @@ async def cancel_noviischet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop('selected_match', None)
     return ConversationHandler.END
 
+
+async def send_daily_digest(app: Application):
+    """
+    Отправляет дайджест дня через час после последнего матча.
+    Показывает очки за день, угаданные исходы, разницы и итоговую таблицу.
+    """
+    now = get_moscow_now()
+    today = now.date()
+
+    if today in DIGEST_SENT_DATES:
+        return
+
+    try:
+        service = get_service()
+
+        # Проверяем есть ли матчи сегодня и прошёл ли час после последнего
+        result = service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID, range=RANGE
+        ).execute()
+        rows = result.get("values", [])
+        if len(rows) < 2:
+            return
+
+        todays_matches = []
+        for i, row in enumerate(rows[1:], start=2):
+            if len(row) < 5:
+                continue
+            date_str = row[1] if len(row) > 1 else ""
+            if not date_str:
+                continue
+            match_date = parse_sheet_date(date_str)
+            if not match_date:
+                continue
+            if match_date.date() == today:
+                todays_matches.append(match_date)
+
+        if not todays_matches:
+            return
+
+        last_match_time = max(todays_matches)
+        if now < last_match_time + timedelta(hours=1):
+            return
+
+        # Берём статистику из таблицы ЧМ
+        stats_result = service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID, range="Таблица ЧМ!A19:F35"
+        ).execute()
+        stats_rows = stats_result.get("values", [])
+
+        # Берём итоговую таблицу очков
+        standings_result = service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID, range="Таблица ЧМ!A2:B16"
+        ).execute()
+        standings_rows = standings_result.get("values", [])
+
+        standings = []
+        for r in standings_rows:
+            if len(r) >= 2 and r[0].strip():
+                try:
+                    standings.append((r[0].strip(), int(r[1]) if r[1] else 0))
+                except Exception:
+                    standings.append((r[0].strip(), 0))
+        standings.sort(key=lambda x: x[1], reverse=True)
+
+        # Считаем очки за день: total_points - вчерашние очки
+        # Поскольку у нас нет вчерашних очков напрямую,
+        # показываем из статистики: прогнозы, точные, разницы, исходы
+        nl = "\n"
+        today_str = today.strftime("%d.%m.%Y")
+        message = "📣 *Итоги дня — " + today_str + "*" + nl + nl
+
+        # Статистика по игрокам
+        if len(stats_rows) > 1:
+            message += "📊 *Статистика участников:*" + nl
+            for row in stats_rows[1:]:
+                if len(row) >= 6 and row[0].strip():
+                    name = row[0].strip()
+                    forecasts = row[1].strip() if row[1] else "0"
+                    exact = row[2].strip() if row[2] else "0"
+                    diff = row[3].strip() if row[3] else "0"
+                    outcome = row[4].strip() if row[4] else "0"
+                    pts = row[5].strip() if row[5] else "0"
+                    message += (nl + "👤 *" + name + "* — " + pts + " очков" + nl)
+                    message += "  🎯 Точный счёт: " + exact + nl
+                    message += "  📈 Разница: " + diff + nl
+                    message += "  ✅ Угаданных исходов: " + outcome + nl
+            message += nl
+
+        # Итоговая таблица
+        message += "🏆 *Таблица лидеров:*" + nl
+        medals = ["🥇", "🥈", "🥉"]
+        for place, (name, pts) in enumerate(standings, start=1):
+            medal = medals[place - 1] if place <= 3 else str(place) + "."
+            message += medal + " " + name + " — " + str(pts) + " очков" + nl
+
+        for user_id in AUTHORIZED_USERS:
+            try:
+                await app.bot.send_message(
+                    chat_id=user_id, text=message, parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.warning("Не удалось отправить дайджест %s: %s", user_id, e)
+
+        DIGEST_SENT_DATES.add(today)
+        logger.info("Дайджест за %s отправлен", today)
+
+    except Exception as e:
+        logger.error("Ошибка send_daily_digest: %s", e)
+
+
 def main():
     if not TOKEN or not SPREADSHEET_ID:
         print(" Ошибка: не задан TELEGRAM_TOKEN или SPREADSHEET_ID")
@@ -1133,6 +1244,7 @@ def main():
     scheduler = AsyncIOScheduler()
     scheduler.add_job(send_reminders, trigger=CronTrigger(hour=13, minute=44), args=[app])
     scheduler.add_job(send_last_reminder,trigger='interval',minutes=2,args=[app])
+    scheduler.add_job(send_daily_digest, trigger='interval', minutes=5, args=[app])
     
     async def post_init(application: Application):
         scheduler.start()
