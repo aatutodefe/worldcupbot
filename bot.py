@@ -243,7 +243,8 @@ def get_main_keyboard():
             KeyboardButton("🌍 Все прогнозы")  
         ],
         [      
-            KeyboardButton("📈 Полная статистика")  
+            KeyboardButton("📈 Полная статистика"),
+            KeyboardButton("🏅 Ставка на чемпиона")  
         ]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -1088,7 +1089,7 @@ async def send_daily_digest(app: Application):
 
         # Берём статистику из таблицы ЧМ
         stats_result = service.spreadsheets().values().get(
-            spreadsheetId=SPREADSHEET_ID, range="Таблица ЧМ!A18:F36"
+            spreadsheetId=SPREADSHEET_ID, range="Таблица ЧМ!A19:F35"
         ).execute()
         stats_rows = stats_result.get("values", [])
 
@@ -1151,6 +1152,209 @@ async def send_daily_digest(app: Application):
 
     except Exception as e:
         logger.error("Ошибка send_daily_digest: %s", e)
+
+
+
+# ===== Ставка на чемпиона =====
+
+CHAMPION_TEAMS_RANGE = "Порядок расчета!C2:E50"
+CHAMPION_BETS_RANGE = "Победитель!A2:C50"
+
+async def show_champion_betting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает список команд для ставки на чемпиона"""
+    user_id = update.effective_user.id
+    if user_id not in AUTHORIZED_USERS:
+        return
+
+    try:
+        service = get_service()
+
+        # Проверяем не поставил ли уже
+        bets_result = service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID, range=CHAMPION_BETS_RANGE
+        ).execute()
+        bets_rows = bets_result.get("values", [])
+
+        player_name = USER_TO_NAME.get(user_id)
+        for row in bets_rows:
+            if len(row) >= 3 and row[0].strip() == player_name and row[2].strip():
+                team = row[2].strip()
+                await update.message.reply_text(
+                    "🏅 Ты уже поставил на *" + team + "*\nСтавку изменить нельзя — удачи!",
+
+
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard()
+                )
+                return
+
+        # Загружаем список команд с коэффициентами
+        teams_result = service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID, range=CHAMPION_TEAMS_RANGE
+        ).execute()
+        teams_rows = teams_result.get("values", [])
+
+        teams = []
+        for row in teams_rows:
+            if len(row) >= 1 and row[0].strip():
+                name = row[0].strip()
+                bonus = row[2].strip() if len(row) >= 3 and row[2].strip() else "?"
+                teams.append((name, bonus))
+
+        if not teams:
+            await update.message.reply_text("❌ Список команд не найден.", reply_markup=get_main_keyboard())
+            return
+
+        # Кнопки с командами (по 2 в ряд)
+        keyboard = []
+        row_buttons = []
+        for i, (name, bonus) in enumerate(teams):
+            row_buttons.append(InlineKeyboardButton(
+                name + " (+" + bonus + ")",
+                callback_data="champion_" + name
+            ))
+            if len(row_buttons) == 2:
+                keyboard.append(row_buttons)
+                row_buttons = []
+        if row_buttons:
+            keyboard.append(row_buttons)
+
+        await update.message.reply_text(
+            "🏅 *Ставка на чемпиона ЧМ*\n\nВыбери команду — победителя турнира.\n⚠️ Изменить потом нельзя!",
+
+
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    except Exception as e:
+        logger.error("Ошибка show_champion_betting: %s", e)
+        await update.message.reply_text("❌ Ошибка загрузки команд.", reply_markup=get_main_keyboard())
+
+
+async def champion_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает выбор команды-чемпиона"""
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+    if user_id not in AUTHORIZED_USERS:
+        return
+
+    team = query.data.replace("champion_", "", 1)
+    player_name = USER_TO_NAME.get(user_id)
+
+    try:
+        service = get_service()
+
+        # Ещё раз проверяем нет ли уже ставки (защита от двойного нажатия)
+        bets_result = service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID, range=CHAMPION_BETS_RANGE
+        ).execute()
+        bets_rows = bets_result.get("values", [])
+
+        for i, row in enumerate(bets_rows):
+            if len(row) >= 1 and row[0].strip() == player_name:
+                if len(row) >= 3 and row[2].strip():
+                    await query.edit_message_text(
+                        "⚠️ Ты уже поставил на *" + row[2].strip() + "* — изменить нельзя.",
+                        parse_mode="Markdown"
+                    )
+                    return
+                # Строка есть, но ставки нет — записываем
+                row_num = i + 2  # +2 потому что range начинается с A2
+                service.spreadsheets().values().update(
+                    spreadsheetId=SPREADSHEET_ID,
+                    range="Победитель!C" + str(row_num),
+                    valueInputOption="USER_ENTERED",
+                    body={"values": [[team]]}
+                ).execute()
+                await query.edit_message_text(
+                    "✅ Ставка принята! Ты поставил на *" + team + "* 🤞",
+                    parse_mode="Markdown"
+                )
+                return
+
+        # Участника нет в таблице — добавляем новую строку
+        next_row = len(bets_rows) + 2
+        service.spreadsheets().values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range="Победитель!A" + str(next_row) + ":C" + str(next_row),
+            valueInputOption="USER_ENTERED",
+            body={"values": [[player_name, "", team]]}
+        ).execute()
+
+        await query.edit_message_text(
+            "✅ Ставка принята! Ты поставил на *" + team + "* 🤞",
+            parse_mode="Markdown"
+        )
+
+    except Exception as e:
+        logger.error("Ошибка champion_choice_callback: %s", e)
+        await query.edit_message_text("❌ Ошибка сохранения ставки. Попробуй ещё раз.")
+
+
+async def broadcast_champion(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Рассылка всем участникам с просьбой поставить на чемпиона (только для админа)"""
+    user_id = update.effective_user.id
+    ADMIN_ID = 283970723  # Матвей
+    if user_id != ADMIN_ID:
+        return
+
+    try:
+        service = get_service()
+
+        # Кнопки с командами
+        teams_result = service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID, range=CHAMPION_TEAMS_RANGE
+        ).execute()
+        teams_rows = teams_result.get("values", [])
+
+        teams = []
+        for row in teams_rows:
+            if len(row) >= 1 and row[0].strip():
+                name = row[0].strip()
+                bonus = row[2].strip() if len(row) >= 3 and row[2].strip() else "?"
+                teams.append((name, bonus))
+
+        if not teams:
+            await update.message.reply_text("❌ Список команд не найден.")
+            return
+
+        keyboard = []
+        row_buttons = []
+        for name, bonus in teams:
+            row_buttons.append(InlineKeyboardButton(
+                name + " (+" + bonus + ")",
+                callback_data="champion_" + name
+            ))
+            if len(row_buttons) == 2:
+                keyboard.append(row_buttons)
+                row_buttons = []
+        if row_buttons:
+            keyboard.append(row_buttons)
+
+        markup = InlineKeyboardMarkup(keyboard)
+        text = (
+            "🏅 *Ставка на чемпиона ЧМ 2026!*\n\n"
+            "Выбери команду — победителя турнира.\n"
+            "За правильный выбор получишь бонусные очки!\n\n"
+            "⚠️ *Изменить ставку нельзя* — выбирай внимательно."
+        )
+
+        sent = 0
+        for uid in AUTHORIZED_USERS:
+            try:
+                await context.bot.send_message(chat_id=uid, text=text, parse_mode="Markdown", reply_markup=markup)
+                sent += 1
+            except Exception as e:
+                logger.warning("Не удалось отправить broadcast_champion %s: %s", uid, e)
+
+        await update.message.reply_text("✅ Рассылка отправлена " + str(sent) + " участникам.")
+
+    except Exception as e:
+        logger.error("Ошибка broadcast_champion: %s", e)
+        await update.message.reply_text("❌ Ошибка рассылки.")
 
 
 def main():
@@ -1239,6 +1443,9 @@ def main():
         context.user_data['current_index'] = queue_data['current_index']
         await handle_forecast(update, context)
 
+    app.add_handler(MessageHandler(filters.Regex("^🏅 Ставка на чемпиона$"), show_champion_betting))
+    app.add_handler(CallbackQueryHandler(champion_choice_callback, pattern="^champion_"))
+    app.add_handler(CommandHandler("broadcast_champion", broadcast_champion))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, forecast_handler))
 
     scheduler = AsyncIOScheduler()
