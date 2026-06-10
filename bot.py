@@ -272,6 +272,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 PENDING_MATCHES = {}
 LAST_REMINDERS = set()
 DIGEST_SENT_DATES = set()  # даты, за которые уже отправлен дайджест
+CHAMPION_BROADCAST_SENT = False  # флаг — рассылка итогов чемпиона уже отправлена
 
 async def handle_forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1357,6 +1358,69 @@ async def broadcast_champion(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("❌ Ошибка рассылки.")
 
 
+
+async def check_champion_bets_complete(app: Application):
+    """
+    Проверяет каждые 5 минут — все ли поставили на чемпиона.
+    Если да — рассылает всем общую таблицу ставок.
+    """
+    global CHAMPION_BROADCAST_SENT
+    if CHAMPION_BROADCAST_SENT:
+        return
+
+    try:
+        service = get_service()
+        bets_result = service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID, range="Победитель!A2:C50"
+        ).execute()
+        bets_rows = bets_result.get("values", [])
+
+        # Собираем ставки по имени участника
+        bets = {}
+        for row in bets_rows:
+            if len(row) >= 1 and row[0].strip():
+                name = row[0].strip()
+                team = row[2].strip() if len(row) >= 3 else ""
+                bonus = row[1].strip() if len(row) >= 2 else ""
+                bets[name] = (team, bonus)
+
+        # Проверяем что все участники поставили
+        all_names = set(USER_TO_NAME.values())
+        missing = [n for n in all_names if not bets.get(n, ("", ""))[0]]
+
+        if missing:
+            return  # Ещё не все поставили
+
+        # Все поставили — формируем сообщение
+        nl = "\n"
+
+        message = "🏅 *Все сделали ставку на чемпиона!*" + nl + nl
+        message += "👥 Участник — Ставка — Бонус" + nl
+        message += "─" * 30 + nl + nl
+
+        for name in sorted(bets.keys()):
+            team, bonus = bets[name]
+            bonus_str = "+" + bonus + " очков" if bonus else "?"
+            message += "🔸 *" + name + "* — " + team + " — " + bonus_str + nl
+
+        message += nl + "🍀 Удачи всем! Пусть победит сильнейший!"
+
+        for user_id in AUTHORIZED_USERS:
+            try:
+                await app.bot.send_message(
+                    chat_id=user_id,
+                    text=message,
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.warning("Не удалось отправить champion broadcast %s: %s", user_id, e)
+
+        CHAMPION_BROADCAST_SENT = True
+        logger.info("Champion broadcast отправлен")
+
+    except Exception as e:
+        logger.error("Ошибка check_champion_bets_complete: %s", e)
+
 def main():
     if not TOKEN or not SPREADSHEET_ID:
         print(" Ошибка: не задан TELEGRAM_TOKEN или SPREADSHEET_ID")
@@ -1452,6 +1516,7 @@ def main():
     scheduler.add_job(send_reminders, trigger=CronTrigger(hour=13, minute=44), args=[app])
     scheduler.add_job(send_last_reminder,trigger='interval',minutes=2,args=[app])
     scheduler.add_job(send_daily_digest, trigger='interval', minutes=5, args=[app])
+    scheduler.add_job(check_champion_bets_complete, trigger='interval', minutes=5, args=[app])
     
     async def post_init(application: Application):
         scheduler.start()
