@@ -43,7 +43,7 @@ RANGE = f"{SHEET_NAME}!A:ZZ"
 AUTHORIZED_USERS = [
     283970723, 183590516, 146770254, 1129899475, 146921711,
     333946991, 402914102, 816016959, 192677707, 8386138845,
-    475652209, 301416726, 375939130, 1043058763, 339215472
+    475652209, 301416726, 375939130, 1043058763, 339215472, 7471741733
 ]  
 
 USER_TO_NAME = {
@@ -52,7 +52,7 @@ USER_TO_NAME = {
     402914102: "Таня", 816016959: "Ваня", 192677707: "Алена",
     8386138845: "Валера Турский", 475652209: "Егор Карев",
     301416726: "Кузя", 375939130: "Левик", 1043058763: "Валера Родак",
-    339215472: "Лобос",
+    339215472: "Лобос", 7471741733 : "Маша Егорчика",
 }
 
 DATE_FORMATS = [
@@ -567,7 +567,7 @@ async def show_table(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_standings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         service = get_service()
-        result = service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range="Таблица ЧМ!A2:B16").execute()
+        result = service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range="Таблица ЧМ!A2:B17").execute()
         rows = result.get('values', [])
         if not rows:
             await update.message.reply_text("📊 Таблица пуста", reply_markup=get_main_keyboard())
@@ -597,7 +597,7 @@ async def show_standings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_detailed_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         service = get_service()
-        result = service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range="Таблица ЧМ!A19:F35").execute()
+        result = service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range="Таблица ЧМ!A18:F36").execute()
         rows = result.get('values', [])
         if not rows:
             await update.message.reply_text("📊 Статистика пуста", reply_markup=get_main_keyboard())
@@ -636,7 +636,7 @@ async def show_my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         service = get_service()
-        result = service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range="Таблица ЧМ!A19:F35").execute()
+        result = service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range="Таблица ЧМ!A18:F36").execute()
         rows = result.get('values', [])
         
         my_stats = None
@@ -655,7 +655,7 @@ async def show_my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         outcome = my_stats[4].strip()
         points = my_stats[5].strip()
 
-        standings_result = service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range="Таблица ЧМ!A2:B16").execute()
+        standings_result = service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range="Таблица ЧМ!A2:B17").execute()
         standings_rows = standings_result.get('values', [])
         
         my_place = "-"
@@ -1088,13 +1088,13 @@ async def send_daily_digest(app: Application):
 
         # Берём статистику из таблицы ЧМ
         stats_result = service.spreadsheets().values().get(
-            spreadsheetId=SPREADSHEET_ID, range="Таблица ЧМ!A19:F35"
+            spreadsheetId=SPREADSHEET_ID, range="Таблица ЧМ!A18:F36"
         ).execute()
         stats_rows = stats_result.get("values", [])
 
         # Берём итоговую таблицу очков
         standings_result = service.spreadsheets().values().get(
-            spreadsheetId=SPREADSHEET_ID, range="Таблица ЧМ!A2:B16"
+            spreadsheetId=SPREADSHEET_ID, range="Таблица ЧМ!A2:B17"
         ).execute()
         standings_rows = standings_result.get("values", [])
 
